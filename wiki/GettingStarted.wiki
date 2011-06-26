@@ -1,4 +1,5 @@
 #summary getting started with Nilestore
+#labels Featured,Phase-Deploy
 
 = Installation =
 
