@@ -179,10 +179,11 @@ webport=8083
 
 }}}
 
-*Note* for now *nilestore start* command will run on the same process it will not create a process in the background so if you interrupted the execution using CTRL-C it will end that process, so as a temporary solution you can use the *&* for Linux Users as follows:
+*Notes:* 
+  # for now *nilestore start* command will run on the same process it will not create a process in the background so if you interrupted the execution using CTRL-C it will end that process, so as a temporary solution you can use the *&* for Linux Users as follows:
 {{{
 >>nilestore start -d introducernode &
 [1] 15981
-}}}
-15981 is the process id.
- 
+}}} 
+   `15981` is the process id.
+  # web interface is only tested on google chrome
