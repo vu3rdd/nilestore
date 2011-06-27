@@ -207,6 +207,17 @@ For our current implementation *NsMonitorClient* has a _SSStatus_ port which use
 
 <img src="http://nilestore.googlecode.com/svn/wiki/img/monitor2.png" align="middle"/ title="Example of Storage Grouped View">
 
+=== Simulator ===
+
+Simulator is a node that creates a small-scale Nilestore grid in one java process, it has an interactive web interface to communicate with the grid as shown below. Kompics provides a *P2pOrchestrator* component which provides a _Network_ and _Timer_ ports and derives the execution from _Experiment_ port.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/simulator.png" align="middle"/ title="Simulator Node" width=320 height=240>
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nssimulator.png" align="middle"/ title="NsSimulator Component" width=320 height=240>
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/simulatorinterface.png" align="middle"/ title="Simulator Web Interface">
+
+
 == Project Structure ==
 Nilestore uses [http://maven.apache.org/ Maven] for build and dependency management, project has the following structure:
  
