@@ -1,0 +1,306 @@
+#summary Illustration of Nilestore Desgin
+#labels Featured,Phase-Design,Phase-Implementation
+
+=Nilestore=
+
+<wiki:toc max_depth="6" /> 
+
+
+== Overview ==
+Nilestore is built using [http://kompics.sics.se Kompics] framework, following the same design of [http://tahoe-lafs.org/ Tahoe-LAFS]. 
+In this document we are describing the design of Nilestore.
+
+*Note:* to understand the following sections you have to read the [http://kompics.sics.se/trac/attachment/wiki/WikiStart/kompics-tutorial.pdf programming manual] first. 
+
+briefly Kompics is a message-passing and component model framework for building distributed systems, it was designed to simplify the development of complex distributed systems.
+
+== Nilestore Nodes ==
+
+There are three main node types in Nilestore; _Peer_, _Introducer_, _Monitor_, and _Bootstrap_.
+
+=== Peer ===
+
+It is the main node in Nilestore, it provides the functionality of the distributed storage system by allowing users to  put/get files into/from the grid.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/peer.png" align="middle"/ title="Peer Node" width=320 height=240>
+
+*NsPeer* is the main component in Nilestore, it requires _Network_, _NetworkControl_, and _Timer_ ports and provides _NilestorePeer_ and _Web_ ports as shown in the next Figure below. it encapsulates different functional components that we will discuss each in details in the following sections.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nspeer.png" align="middle"/ title="NsPeer Component">
+
+==== Available Peers ====
+
+*NsAvailablePeers* is an abstraction for the underlying overlay, it holds information about other living peers in the grid. it requires _Timer_, _Network_, and _FailureDetector_ ports and provides _AvailablePeers_ and _APStatus_ ports as shown in next figure.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nsavailablepeers.png" align="middle"/ title="NsAvailablePeers Component">
+
+
+In Nilestore, we have two different overlay implementation centralized and decentralized. note that the main components that changes according to overlay type are *NsShareFinder* and *NsPeerSelector* because both try to solve either where to put the shares? or where to find the shares?.
+
+  * *Centralized Version* in this case each peer upon start announces its presence to an Introducer node as illustrated in [http://code.google.com/p/nilestore/wiki/TahoeLAFSBasics#Introducer_Node Tahoe-LAFSBasics].
+
+  when a _GetPeers(peerselectionIndex)_ is triggered at the _AvailablePeers_ port, NsAvailablePeers will permutes the list of servers by Hash(peerid+peerselectionIndex) then it will triggers back a _GetPeersResponse(permutedservers)_.
+
+  * *Decentralized Version`[1]`* in this case each peer -only who have a storage server- contribute in a DHT Chord ring. As described in the next figure, decentralized version of *NsAvailablePeers* has a *Chord* component which holds the information about the Chord Ring that we are part of and *BootstrapClient* which communicates with the *BootstrapServer* which is responsible for initializing the ring.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nsavailablepeers2.png" align="middle" title="NsAvailablePeers Component (Decentralized Version)" width=320 height=240/>
+
+  when a _GetPeers(peerselectionIndex)_ is triggered at the *AvailablePeers* port, NsAvailablePeers will triggers a _Chordlookup_ event at *ChordSO* then, after receiving _ChordlookupResponse_ it will triggers back a _GetPeersResponse(peer)_ where peer is the closest peer to _peerselectionIndex_ in the ring.
+
+  In case where a peer does not have storage enabled so, NsAvailablePeers will not create a *Chord* component as specified before but instead it will communicate with the *Bootstrap Node* to get a random node located inside the ring then, it will communicate with that node directly using _Network_ and will ask for assistance to discover nodes to be used either for peer selection or share finding.
+
+==== Connection Failure Detector ====
+
+*NsConnectionFailureDetector (CFD)* is responsible for detecting connection failures by keeping track of the network status "Session Open, Session Close" through _NetControl_ port and by using _Timer_ timeout events and *PingFailureDetector* component "Kompics component tweaked by adding number of tries instead of pinging forever".
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/cfd.png" align="middle" title="NsConnectionFailureDetector Component" width=400 height=200/>
+
+*CFD* acts as a wrapper for *PingFailureDetector* component as it holds it inside to be used by the  the *CFD* itself and provides it to other components by providing the _FailureDetector_ port.
+
+when  _NotifyonFailure_ event is triggered at the _CFailureDetector_ port, *CFD* will schedule a timer event with a specified delay, if the timer timeout reached before receiving a _CancelNotifyonFailure_ from the requester *CFD* will trigger a _StartProbePeer(addr,retries)_ which will ask the *PingFailureDetector* to conclude if "addr" is alive or not by pinging for "retries" times. if  a failure received then, a _ConnectionFailure_ will be triggered on the requester otherwise the *CFD* will schedule another timer event and so on.
+
+A sequence diagram of *CFD* operation is described in figure below. note that for clarity the Network part is not included.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/cfdseq.png" align="middle" title="Connection Failure Detector Sequence Diagram" width=600 height=600/>
+
+==== Redundancy ====
+
+*NsRedundancy* encapsulates the redundancy logic, it communicates with other components through _Redundancy_ port which accepts _Encode_/_Decode_ requests and delivers _EncodeResp_/_DecodeResp_ responses. currently NsRedundancy implements the redundancy logic using the onion network coders "Reed Solomon Codes".
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/redundancy.png" align="middle" title="NsRedundancy Component" width=320 height=160/>
+
+For the first time _Encode_/_Decode_ event is triggered at the Redundancy port, the NsRedundancy will create an onion network PureCode`[2]` object according to the specified replication parameters and add that object to a map as shown in next table. after that, for all encode/decode events triggered again with the same parameters the NsRedundancy will use the existing coder instead of creating a new one.
+
+|| (3,10) || PureCode1||
+|| (12,40) || PureCode2||
+|| (10,20) || PureCode3||
+
+
+==== Storage Server ====
+
+*NsStorageServer* component is responsible for dealing (read/write/inquiry) with share files on disk through the usage of *NsBucketWriter* and *NsBucketReader* components which allows remote 
+read and write operations. 
+
+NsStorageServer requires _Network_ and _CFailureDetector_ ports, it accepts the following events on the _Network_ port: 
+  * _AllocateBuckets_ event which holds information for share files to be allocated, and triggers back a _AllocateBucketsResponse_ holding the addresses (if possible) of the created *NsBucketWriters* to communicate with them directly.
+  * _GetBuckets_ event which asks about existing shares for a particular storage index, and triggers back a _GetBucketsResponse_ holding the addresses of the created *NSBucketReaders* to communicate with them directly.
+  * _HaveBuckets_ event which asks about existing shares for a particular storage index, and triggers back a _HaveBucketsResponse_ holding a list of the existing share numbers.
+
+NsStorageServer provides _SSStatus_ port which accepts _SSStatusRequest_ event and delivers _SSStatusResponse_ event holding the current status of the storage server.
+
+*NsBucketReader* accepts _RemoteRead_ and _Close_ events at the _Network_ port and delivers _RemoteReadResponse_, *NsBucketWriter* accepts _RemoteWrite_ and _Close_ events at the _Network_ port and delivers _RemoteWriteResponse_.
+
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/storageserver.png" align="middle" title="NsStorageServer Component" width=320 height=320/>
+
+==== Immutable Manager ====
+
+*NsImmutableManager* is responsible for creating/destroying uploaders and downloaders upon request at its provided _Immutable_ port, also it carry information about current uploaders/downloaders. 
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/immmanager.png" align="middle" title="NsImmutableManager Component" width=640 height=480/>
+
+===== Uploader =====
+
+*NsUploader* represents a single upload operation and it is initiated with the file handle of the file to be uploaded.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/immuploader.png" align="middle" title="NsUploader Component" width=400 height=280/>
+
+
+A sequence diagram of the main actions done during the upload process is described in next figure. Note that every status message returned from the NsWriteBucketProxy is evaluated to check BucketWriter failures but we didn't add them to the sequence diagram to make it clear.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/immuploaderseq.png" align="middle" title="Uploading Sequence diagram" width=800 height=600/>
+
+====== Peer Selector ======
+
+*NsPeerSelector* is responsible for selecting the appropriate peers for the uploading process. NsPeerSelector is an abstraction for the peer selection process and it has different implementations, in case of using the Introducer node "centralized" then a _Tahoe2PeerSelector_ algorithm is used otherwise in case of using Chord "decentralized" then a _ChordPeerSelector`[1]`_ is used.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/immpeerselector.png" align="middle" title="NsPeerSelector Component" width=320 height=240/>
+
+
+Despite the used type of NsPeerSelector, a *NsPeerTracker* components are used where each NsPeerTracker is responsible for communicating with one storage server to ask about existing shares and/or to create new shares.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/peertracker.png" align="middle" title="NsPeerTracker Component" width=320 height=160/>
+
+
+In Nilestore, we have different implementations of PeerSelectors; Tahoe2PeerSelector and ChordPeerSelector`[1]` which used in case of Chord ring overlay . ChordPeerSelection algorithm is inspired by the proposed Tahoe3PeerSelector algorithm and it's a gossip like algorithm where we ask random peers in the ring to hold the task of allocating a share for us either on their storage server or by propagating the request to other peers and finally returning back with a peer that accepted to hold that share. this algorithm theoretically could fit very well in large networks. In a decentralized version the _NsShareFinder_ will use almost the same algorithm but instead of allocating a share it will search for a share.
+
+====== Write Bucket Proxy ======
+
+*NsWriteBucketProxy* is responsible for writing share data on a storage server by communicating with NsBucketWriter component in the storage server. At the end of peer selection process the uploader will create a set of NsWriteBucketProxy components to pass their ids to the NsEncoder for further use.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/wbp.png" align="middle" title="NsWriteBucketProxy Component" width=400 height=240/>
+
+====== Encoder ======
+
+*NsEncoder* is responsible for the actual uploading process where the file is encrypted, segmented and then adding redundant data using NsRedundancy, then sent to servers through the NsWriteBucketProxies created by the parent uploader. At the end of the process the Encoder will trigger an _EncoderDone_ event holding the verifyCap of the uploaded file.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/encoder.png" align="middle" title="NsEncoder Component" width=320 height=160/>
+
+===== Downloader =====
+
+*NsDownloader* is responsible for a single download operation and it's initiated with the capability uri of the file to be downloaded. it holds the NsDownloadNode component which is responsible for the actual downloading process, the NsDownloader is just a wrapper for NsDownloadNode with a decryption key to decrypt validated segments gathered by the download node.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nsdownloader.png" align="middle" title="NsDownloader Component"/>
+
+
+*NsDownloadNode* holds  a _DownloadCommon_ object which holds the uri extension block(*UEB*), share hash tree, ciphertext hash tree and other parameters required to validate the shares. 
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nsdownloadnode.png" align="middle" title="NsDownloadNode Component"/>
+
+
+Notice that in our current implementation we fetch the whole block hash tree and ciphertext hash tree which conflict with the use of merkle trees "validating random nodes on the tree" but it's implemented that way for simplicity we could improve that in later versions.
+
+check the sequence diagram of the download process in the next figure.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/downloadseq.png" align="middle" title="Downloading Sequence diagram" width=800 height=1000/>
+
+====== Share Finder ======
+
+*NsShareFinder* is responsible for locating shares on storage servers, it uses set of NsPeerTracker components to communicate with storage servers. it follows almost the same design as the share finder in Tahoe.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/immsharefinder.png" align="middle" title="NsShareFinder Component" width=320 height=240/>
+
+====== Bucket Reader ======
+
+*NsReadBucketProxy* is responsible for reading share data located on a storage server by communicating with NsBucketReader component in the storage server, also responsible for validating blocks data against their block hash tree. NsDownloader creates NsReadBucketProxy components every time it got _GotShares_ event from the share finder, and passes their ids to the NsSegementFetcher.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/rbp.png" align="middle" title="NsReadBucketProxy Component" width=400 height=240/>
+
+
+After initiating a NsReadBucketProxy component it will request the header data of the share file it is responsible for and any requests triggered at _ReadBP_ port before getting the header data will be postponed until getting the header data. NsDownloader will trigger _SetCommonParams_ event on the _ReadBP_ port of read bucket proxies who don't have the number of segments and the size of the tail block. 
+
+When _GetBlock_ is triggered the read bucket proxy will try to fetch the required hashes to verify that segment and will triggers back the ciphertext hashes in a _GotCiphertextHashes_ event to the downloader which validates them according to the ciphertext hash tree in DownloadCommon. 
+
+====== Segment Fetcher ======
+
+*NsSegmentFetcher* is responsible for fetching segments upon request. NsDownloader will request segments from NsSegmentFetcher by triggering _GetSegment_ on the _SegmentFetcher_ port event. NsSegmentFetcher will triggers a _GetSegmentResponse_ event when it got a segment. 
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/segmentfetcher.png" align="middle" title="NsSegmentFetcher Component" width=280 height=160/>
+
+==== Web Application ====
+
+*NsWebApplication* is responsible for handling web requests triggered at its _Web_ port and figure which operation to be done; for example if operation is upload a file then NsWebApplication will trigger a _Upload_ event at the _Immutable_ port.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/webapp.png" align="middle" title="NsWebApplication Component" width=160 height=80/>
+
+
+=== Introducer ===
+
+It is the entry point for new peers to discover already existing peers. It follows *Publish/Subscribe* pattern.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/introducer.png" align="middle"/ title="Introducer Node" width=320 height=240>
+
+Introducer node has a NsIntroducerServer component which accepts _Publish_ and _Subscribe_ events through the _Network_ port and delivers _Announce_ event as shown in Figure below.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/nsintroducerserver.png" align="middle"/ title="Introducer Server" width=320 height=160>
+
+=== Monitor ===
+
+It is a server that collect data from peers whom enabled the monitoring feature in the grid, each peer will have a *NsMonitorClient* which communicates with other components inside the peer to get status then it will send a status every some period of time according to configuration to *NsMonitorServer*.
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/monitor.png" align="middle"/ title="Monitor Node" width=320 height=240>
+
+
+For our current implementation *NsMonitorClient* has a _SSStatus_ port which used to get status information about storage server on each peer, all these information is sent to the *NsMonitorServer* which display these info in a visual representation. for now we have two visual representation; *Storage Matrix* which plot storage indeces against storage servers and display the count of shares as an intensity, and *Storage Grouped View* which plots the amount of contribution "_Used Space_ and _Count of Shares_" by a storage node to the whole network.
+ 
+<img src="http://nilestore.googlecode.com/svn/wiki/img/monitor1.png" align="middle"/ title="Example of Storage Matrix">
+
+<img src="http://nilestore.googlecode.com/svn/wiki/img/monitor2.png" align="middle"/ title="Example of Storage Grouped View">
+
+== Project Structure ==
+Nilestore uses [http://maven.apache.org/ Maven] for build and dependency management, project has the following structure:
+ 
+{{{
+nilestore/
+|-- nilestore-availablepeers
+|   |-- nilestore-availablepeers-centralized
+|   |   |-- nilestore-availablepeers-centralized-cmp
+|   |   `-- nilestore-availablepeers-centralized-port
+|   |-- nilestore-availablepeers-decentralized
+|   `-- nilestore-availablepeers-port
+|-- nilestore-common
+|-- nilestore-connectionfd
+|   |-- nilestore-connectionfd-cmp
+|   `-- nilestore-connectionfd-port
+|-- nilestore-cryptography
+|-- nilestore-immutable
+|   |-- nilestore-immutable-abstract-updown
+|   |-- nilestore-immutable-common
+|   |-- nilestore-immutable-downloader
+|   |   |-- nilestore-immutable-downloader-cmp
+|   |   |-- nilestore-immutable-downloader-node
+|   |   |   |-- nilestore-immutable-downloader-node-cmp
+|   |   |   `-- nilestore-immutable-downloader-node-port
+|   |   |-- nilestore-immutable-downloader-port
+|   |   |-- nilestore-immutable-downloader-reader
+|   |   |   |-- nilestore-immutable-downloader-reader-cmp
+|   |   |   `-- nilestore-immutable-downloader-reader-port
+|   |   |-- nilestore-immutable-downloader-segfetcher
+|   |   |   |-- nilestore-immutable-downloader-segfetcher-cmp
+|   |   |   `-- nilestore-immutable-downloader-segfetcher-port
+|   |   `-- nilestore-immutable-downloader-sharefinder
+|   |       |-- nilestore-immutable-downloader-sharefinder-port
+|   |       `-- nilestore-immutable-downloader-sharefinder-tahoe
+|   |-- nilestore-immutable-file
+|   |-- nilestore-immutable-manager
+|   |   |-- nilestore-immutable-manager-cmp
+|   |   `-- nilestore-immutable-manager-port
+|   |-- nilestore-immutable-peertracker
+|   |   |-- nilestore-immutable-peertracker-cmp
+|   |   `-- nilestore-immutable-peertracker-port
+|   `-- nilestore-immutable-uploader
+|       |-- nilestore-immutable-uploader-cmp
+|       |-- nilestore-immutable-uploader-encoder
+|       |   |-- nilestore-immutable-uploader-encoder-cmp
+|       |   `-- nilestore-immutable-uploader-encoder-port
+|       |-- nilestore-immutable-uploader-peerselector
+|       |   |-- nilestore-immutable-uploader-peerselector-port
+|       |   |-- nilestore-immutable-uploader-peerselector-simple
+|       |   `-- nilestore-immutable-uploader-peerselector-tahoe2
+|       |-- nilestore-immutable-uploader-port
+|       `-- nilestore-immutable-uploader-writer
+|           |-- nilestore-immutable-uploader-writer-cmp
+|           `-- nilestore-immutable-uploader-writer-port
+|-- nilestore-interfaces
+|-- nilestore-introducer
+|   |-- nilestore-introducer-port
+|   `-- nilestore-introducer-server
+|-- nilestore-main
+|-- nilestore-monitor
+|   |-- nilestore-monitor-client
+|   |-- nilestore-monitor-port
+|   `-- nilestore-monitor-server
+|-- nilestore-peer
+|   |-- nilestore-peer-cmp
+|   |-- nilestore-peer-main
+|   `-- nilestore-peer-port
+|-- nilestore-redundancy
+|   |-- nilestore-redundancy-onion-fec
+|   `-- nilestore-redundancy-port
+|-- nilestore-simulator
+|-- nilestore-storage
+|   |-- nilestore-storage-common
+|   |-- nilestore-storage-immutable
+|   |   |-- nilestore-storage-immutable-reader
+|   |   |   |-- nilestore-storage-immutable-reader-cmp
+|   |   |   `-- nilestore-storage-immutable-reader-port
+|   |   |-- nilestore-storage-immutable-sharefile
+|   |   `-- nilestore-storage-immutable-writer
+|   |       |-- nilestore-storage-immutable-writer-cmp
+|   |       `-- nilestore-storage-immutable-writer-port
+|   |-- nilestore-storage-port
+|   `-- nilestore-storage-server
+|-- nilestore-uri
+|-- nilestore-utils
+|-- nilestore-web-sharedresources
+|-- nilestore-webapp
+`-- nilestore-webserver
+    |-- nilestore-webserver-jetty
+    |-- nilestore-webserver-port
+    `-- nilestore-webserver-servlets
+}}}
+
+-----
+`[1]` This Feature is still in development
+
+`[2]` PureCode is OnionNetwork's Java implementation of ReedSolomon Codes
