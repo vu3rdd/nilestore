@@ -173,7 +173,7 @@ When _GetBlock_ is triggered the read bucket proxy will try to fetch the require
 
 ====== Segment Fetcher ======
 
-*NsSegmentFetcher* is responsible for fetching segments upon request. NsDownloader will request segments from NsSegmentFetcher by triggering _GetSegment_ on the _SegmentFetcher_ port event. NsSegmentFetcher will triggers a _GetSegmentResponse_ event when it got a segment. 
+*NsSegmentFetcher* is responsible for fetching segments upon request. NsDownloader will request segments from NsSegmentFetcher by triggering _GetSegment_ on the _SegmentFetcher_ port event. NsSegmentFetcher will triggers a _GetSegmentResponse_ event when it got a segment. it follows almost the same design as segment fetcher in Tahoe but instead of creating a new segment fetcher for each segment we used it for all segments by tweaking the segment fetcher design.
 
 <img src="http://nilestore.googlecode.com/svn/wiki/img/segmentfetcher.png" align="middle" title="NsSegmentFetcher Component" width=280 height=160/>
 
