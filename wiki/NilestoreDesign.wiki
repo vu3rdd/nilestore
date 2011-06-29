@@ -12,7 +12,10 @@ In this document we are describing the design of Nilestore.
 
 *Note:* to understand the following sections you have to read the [http://kompics.sics.se/trac/attachment/wiki/WikiStart/kompics-tutorial.pdf programming manual] first. 
 
+=== Kompics Overview ===
 briefly Kompics is a message-passing and component model framework for building distributed systems, it was designed to simplify the development of complex distributed systems.
+
+<wiki:video url="http://www.youtube.com/watch?v=G_LCPkY87rs" />
 
 == Nilestore Nodes ==
 
